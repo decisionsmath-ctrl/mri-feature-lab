@@ -1,0 +1,30 @@
+# Python environment & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Model checkpoints & data
+models/*.keras
+models/*.h5
+data/train/*
+data/val/*
+data/test/*
+!data/train/.gitkeep
+!data/val/.gitkeep
+!data/test/.gitkeep
+
+# Streamlit secrets & local config
+.streamlit/secrets.toml
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# System files
+.DS_Store
+Thumbs.db

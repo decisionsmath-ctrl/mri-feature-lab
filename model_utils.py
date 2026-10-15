@@ -1,7 +1,4 @@
-"""
-model_utils.py - Core TensorFlow/Keras utilities for MobileNetV2 architecture,
-image preprocessing, prediction, and intermediate feature-map extraction.
-"""
+
 
 import os
 import numpy as np

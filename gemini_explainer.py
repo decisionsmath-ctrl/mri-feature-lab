@@ -1,8 +1,4 @@
-```python
-"""
-gemini_explainer.py
-Educational explanations for MRI classification results using Gemini.
-"""
+
 
 import os
 from PIL import Image
@@ -92,4 +88,3 @@ Important limitations:
             "The classification result should be considered separately."
             f"\n\n---\n{CLINICAL_DISCLAIMER}"
         )
-```

@@ -1,7 +1,4 @@
-```python
-"""
-model_utils.py - MobileNetV2 utilities for MRI image classification.
-"""
+
 
 import os
 import numpy as np
@@ -174,4 +171,3 @@ def extract_feature_maps(model, processed_image_array, layer_count=4):
             print(f"Could not extract {layer.name}: {exc}")
 
     return feature_maps
-```

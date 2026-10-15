@@ -1,7 +1,4 @@
-"""
-test_model_utils.py - Pytest suite verifying model generation,
-image preprocessing pipeline, prediction logic, and failure handling.
-"""
+
 
 import os
 import pytest

@@ -1,4 +1,7 @@
-
+"""
+gemini_explainer.py
+Educational explanations for MRI classification results using Gemini.
+"""
 
 import os
 from PIL import Image
@@ -67,6 +70,7 @@ Important limitations:
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 max_output_tokens=350,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
 

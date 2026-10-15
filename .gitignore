@@ -10,6 +10,8 @@ ENV/
 # Model checkpoints & data
 models/*.keras
 models/*.h5
+# keep the one deployable model so Streamlit Cloud can load it
+!models/mobilenet_mri.keras
 data/train/*
 data/val/*
 data/test/*

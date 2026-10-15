@@ -1,90 +1,148 @@
+"""
+app.py - Streamlit front end for MRI Feature Lab.
 
+Run locally with:   streamlit run app.py
+(NOT `python app.py`)
+"""
 
 import os
-from PIL import Image
-from google import genai
-from google.genai import types
 
-CLINICAL_DISCLAIMER = """
-**Educational use only:** This experimental model is not a medical
-diagnostic tool. Its predictions and confidence scores are not a diagnosis.
-Consult a qualified radiologist or medical professional for clinical
-interpretation.
-"""
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import streamlit as st
+from PIL import Image, UnidentifiedImageError
+
+st.set_page_config(page_title="MRI Feature Lab", page_icon="🧠", layout="wide")
+
+MODEL_PATH = "models/mobilenet_mri.keras"
+
+DISCLAIMER = (
+    "**NOT FOR CLINICAL USE.** This is an educational demonstration. "
+    "It is not a medical device and must never be used to diagnose, "
+    "treat, or guide clinical decisions."
+)
 
 
-def generate_mri_explanation(
-    pil_image: Image.Image,
-    predicted_class: str,
-    confidence: float,
-    class_scores: dict,
-    api_key: str = None,
-) -> str:
-    """Generate a cautious, educational explanation of model output."""
+# --------------------------------------------------------------------------
+# TensorFlow is imported lazily so the page renders immediately instead of
+# freezing for 10-60 s on first load (this is what looked like "stuck").
+# --------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading TensorFlow and the model...")
+def get_trained_model():
+    import model_utils
+    return model_utils.load_trained_model(MODEL_PATH)
 
-    resolved_key = api_key or os.getenv("GEMINI_API_KEY")
 
-    if not resolved_key:
-        return (
-            "Gemini is unavailable because no API key is configured. "
-            "The MRI classifier can operate separately if its trained "
-            "model is available."
-        )
+@st.cache_resource(show_spinner="Loading ImageNet MobileNetV2 backbone...")
+def get_backbone_model():
+    import model_utils
+    return model_utils.build_mobilenet_model()
 
-    prompt = f"""
-You are an educational assistant explaining a computer-vision experiment.
 
-A MobileNetV2 model classified an uploaded brain MRI image.
+def plot_feature_maps(feature_maps, max_channels=8):
+    n_rows = len(feature_maps)
+    fig, axes = plt.subplots(n_rows, max_channels,
+                             figsize=(2 * max_channels, 2.2 * n_rows),
+                             squeeze=False)
+    for r, (name, act) in enumerate(feature_maps.items()):
+        act = act[0]                       # drop batch axis -> (H, W, C)
+        for c in range(max_channels):
+            ax = axes[r][c]
+            ax.axis("off")
+            if c < act.shape[-1]:
+                ax.imshow(act[:, :, c], cmap="viridis")
+            if c == 0:
+                ax.set_title(f"{name}\n{act.shape[0]}x{act.shape[1]}x{act.shape[2]}",
+                             fontsize=8, loc="left")
+    fig.tight_layout()
+    return fig
 
-Model output:
-- Predicted label: {predicted_class}
-- Model confidence score: {confidence:.4f}
-- Class scores: {class_scores}
 
-Explain:
-1. What a CNN learns in general when classifying images.
-2. Why confidence scores do not establish diagnostic certainty.
-3. How image quality, dataset bias, and distribution differences can
-   affect predictions.
-4. Why professional radiological assessment is necessary.
+def get_gemini_key():
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("GEMINI_API_KEY")
 
-Important limitations:
-- Do not claim that this classifier has detected or localized a tumor.
-- Do not assert that a specific anatomical abnormality is present.
-- The class scores are model outputs, not calibrated clinical probabilities.
-- Do not provide a diagnosis, treatment recommendation, or prognosis.
-- Clearly distinguish general CNN concepts from facts established by
-  this particular model.
-- Keep the explanation under 200 words.
-"""
+
+def main():
+    st.title("🧠 MRI Feature Lab")
+    st.error(DISCLAIMER)
+
+    uploaded = st.file_uploader("Upload a brain MRI image",
+                                type=["png", "jpg", "jpeg"])
+    if uploaded is None:
+        st.info("Upload an image to begin.")
+        return
 
     try:
-        client = genai.Client(api_key=resolved_key)
+        image = Image.open(uploaded)
+        image.load()
+    except (UnidentifiedImageError, OSError):
+        st.error("That file could not be read as an image.")
+        return
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[pil_image, prompt],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=350,
-            ),
-        )
+    left, right = st.columns(2)
+    left.image(image, caption="Uploaded image", use_container_width=True)
 
-        explanation = getattr(response, "text", None)
+    import model_utils
+    processed = model_utils.preprocess_image(image)
 
-        if not explanation or not explanation.strip():
-            explanation = (
-                "Gemini did not return a usable explanation. "
-                "Please try again later."
+    # ---- Prediction (only with real trained weights) ---------------------
+    model = get_trained_model()
+    result = None
+    with right:
+        st.subheader("Classification")
+        if model is None:
+            st.warning(
+                f"No trained model found at `{MODEL_PATH}`. "
+                "No prediction is shown (nothing is fabricated). "
+                "Train one with `python train.py` and add the file."
             )
+        else:
+            label, confidence, scores = model_utils.predict_mri(model, processed)
+            result = (label, confidence, scores)
+            st.metric("Model output", label, f"score {confidence:.3f}")
+            st.bar_chart(scores)
+            st.caption("Scores are model outputs, not calibrated "
+                       "clinical probabilities.")
 
-        return f"{explanation.strip()}\n\n---\n{CLINICAL_DISCLAIMER}"
+    # ---- Feature maps ----------------------------------------------------
+    st.subheader("Intermediate feature maps")
+    layer_count = st.slider("Number of layers", 2, 6, 4)
+    if model is not None:
+        source, note = model, "Feature maps from your trained model."
+    else:
+        source = get_backbone_model()
+        note = ("Feature maps from the **ImageNet-pretrained backbone** "
+                "(not trained on MRI).")
+    st.caption(note)
+    maps = model_utils.extract_feature_maps(source, processed, layer_count)
+    if maps:
+        fig = plot_feature_maps(maps)
+        st.pyplot(fig)
+        plt.close(fig)
+    else:
+        st.info("No feature maps available.")
 
-    except Exception:
-        # Avoid displaying raw exception details in the user interface.
-        return (
-            "Unable to generate an explanation at this time. "
-            "Check the API configuration and service availability. "
-            "The classification result should be considered separately."
-            f"\n\n---\n{CLINICAL_DISCLAIMER}"
-        )
+    # ---- Optional Gemini explanation ------------------------------------
+    st.subheader("Optional: Gemini educational explanation")
+    if result is None:
+        st.caption("Available after a trained model produces a result.")
+    else:
+        st.caption("This sends the uploaded image to Google's Gemini API.")
+        if st.button("Explain with Gemini"):
+            from gemini_explainer import generate_mri_explanation
+            with st.spinner("Asking Gemini..."):
+                text = generate_mri_explanation(
+                    image, result[0], result[1], result[2],
+                    api_key=get_gemini_key(),
+                )
+            st.markdown(text)
+
+
+main()

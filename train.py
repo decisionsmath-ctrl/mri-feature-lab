@@ -1,173 +1,89 @@
+"""
+train.py - Train the MobileNetV2 MRI classifier.
 
+Expected folder layout (class folder names must match CLASS_NAMES):
 
+    data/train/no_tumor/*.jpg   data/train/tumor/*.jpg
+    data/val/no_tumor/*.jpg     data/val/tumor/*.jpg
+
+Run:
+    python train.py --epochs 10
+    python train.py --epochs 10 --fine-tune-epochs 5
+"""
+
+import argparse
 import os
-import numpy as np
-from PIL import Image
+
 import tensorflow as tf
-from tensorflow.keras import layers, models
-from tensorflow.keras.applications import MobileNetV2
 
-IMG_SIZE = (128, 128)
-CLASS_NAMES = ["no_tumor", "tumor"]
-
-
-def build_mobilenet_model(
-    input_shape=(128, 128, 3),
-    num_classes=2,
-    trainable_base=False,
-):
-    """Build a binary MRI classifier using MobileNetV2."""
-
-    if num_classes != len(CLASS_NAMES):
-        raise ValueError("num_classes must be 2 for this classifier.")
-
-    base_model = MobileNetV2(
-        input_shape=input_shape,
-        include_top=False,
-        weights="imagenet",
-    )
-    base_model.trainable = trainable_base
-
-    inputs = layers.Input(shape=input_shape, name="image")
-
-    # Convert pixels from [0, 255] to [-1, 1], as MobileNetV2 expects.
-    x = layers.Rescaling(
-        scale=1.0 / 127.5,
-        offset=-1.0,
-        name="mobilenet_preprocessing",
-    )(inputs)
-
-    x = base_model(x, training=False)
-    x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dropout(0.3)(x)
-    x = layers.Dense(128, activation="relu")(x)
-    x = layers.Dropout(0.2)(x)
-    outputs = layers.Dense(
-        num_classes,
-        activation="softmax",
-        name="class_probabilities",
-    )(x)
-
-    model = models.Model(
-        inputs,
-        outputs,
-        name="MobileNetV2_MRI_Classifier",
-    )
-
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-        loss="sparse_categorical_crossentropy",
-        metrics=["accuracy"],
-    )
-    return model
+from model_utils import (
+    CLASS_NAMES,
+    DEFAULT_MODEL_PATH,
+    IMG_SIZE,
+    build_mobilenet_model,
+)
 
 
-def load_trained_model(model_path="models/mobilenet_mri.keras"):
-    """Load a trained model, or return None if unavailable."""
+def load_split(path, batch_size, shuffle):
+    if not os.path.isdir(path):
+        raise SystemExit(f"Folder not found: {path}")
 
-    if not os.path.isfile(model_path):
-        return None
-
-    try:
-        return tf.keras.models.load_model(model_path)
-    except (ValueError, OSError, TypeError) as exc:
-        print(f"Could not load model: {exc}")
-        return None
-
-
-def preprocess_image(pil_image, target_size=IMG_SIZE):
-    """Return a batch of RGB pixels in the [0, 255] range."""
-
-    if not isinstance(pil_image, Image.Image):
-        raise TypeError("Expected a PIL Image.")
-
-    pil_image = pil_image.convert("RGB")
-    pil_image = pil_image.resize(target_size)
-
-    array = np.asarray(pil_image, dtype=np.float32)
-    return np.expand_dims(array, axis=0)
+    return tf.keras.utils.image_dataset_from_directory(
+        path,
+        labels="inferred",
+        label_mode="int",          # matches sparse_categorical_crossentropy
+        class_names=CLASS_NAMES,   # fixes the order: no_tumor=0, tumor=1
+        image_size=IMG_SIZE,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        seed=42,
+    ).prefetch(tf.data.AUTOTUNE)
 
 
-def predict_mri(model, processed_image_array):
-    """Return predicted label, confidence, and class probabilities."""
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-dir", default="data/train")
+    parser.add_argument("--val-dir", default="data/val")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--fine-tune-epochs", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--output", default=DEFAULT_MODEL_PATH)
+    args = parser.parse_args()
 
-    if model is None:
-        raise ValueError("A trained model must be loaded before prediction.")
+    train_ds = load_split(args.train_dir, args.batch_size, shuffle=True)
+    val_ds = load_split(args.val_dir, args.batch_size, shuffle=False)
 
-    predictions = np.asarray(
-        model.predict(processed_image_array, verbose=0)[0]
-    )
+    model = build_mobilenet_model()
 
-    if predictions.shape != (len(CLASS_NAMES),):
-        raise ValueError("Model output does not match the expected two classes.")
-
-    if not np.all(np.isfinite(predictions)):
-        raise ValueError("Model returned non-finite prediction values.")
-
-    predicted_idx = int(np.argmax(predictions))
-    scores = {
-        name: float(prob)
-        for name, prob in zip(CLASS_NAMES, predictions)
-    }
-
-    return CLASS_NAMES[predicted_idx], float(predictions[predicted_idx]), scores
-
-
-def extract_feature_maps(model, processed_image_array, layer_count=4):
-    """Extract selected convolutional activations for visualization."""
-
-    if model is None or layer_count < 1:
-        return {}
-
-    base_model = next(
-        (
-            layer for layer in model.layers
-            if isinstance(layer, tf.keras.Model)
-            and "mobilenet" in layer.name.lower()
-        ),
-        None,
-    )
-
-    if base_model is None:
-        return {}
-
-    candidates = [
-        layer for layer in base_model.layers
-        if isinstance(
-            layer,
-            (tf.keras.layers.Conv2D, tf.keras.layers.DepthwiseConv2D),
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss", patience=3, restore_best_weights=True
         )
     ]
 
-    if not candidates:
-        return {}
+    print("Stage 1: training the classification head (backbone frozen)")
+    model.fit(train_ds, validation_data=val_ds,
+              epochs=args.epochs, callbacks=callbacks)
 
-    indices = np.linspace(
-        0,
-        len(candidates) - 1,
-        num=min(layer_count, len(candidates)),
-        dtype=int,
-    )
+    if args.fine_tune_epochs > 0:
+        print("Stage 2: fine-tuning the top of the backbone")
+        base = next(l for l in model.layers if "mobilenet" in l.name.lower()
+                    and isinstance(l, tf.keras.Model))
+        base.trainable = True
+        for layer in base.layers[:-30]:
+            layer.trainable = False
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
+        model.fit(train_ds, validation_data=val_ds,
+                  epochs=args.fine_tune_epochs, callbacks=callbacks)
 
-    # Use the same preprocessing embedded in the complete model.
-    feature_maps = {}
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    model.save(args.output)
+    print(f"Saved model to {args.output}")
 
-    for index in indices:
-        layer = candidates[index]
 
-        try:
-            extractor = models.Model(
-                inputs=base_model.input,
-                outputs=layer.output,
-            )
-
-            # Input to the backbone must already be preprocessed to [-1, 1].
-            normalized = processed_image_array / 127.5 - 1.0
-
-            activation = extractor.predict(normalized, verbose=0)
-            feature_maps[layer.name] = activation
-
-        except (ValueError, TypeError) as exc:
-            print(f"Could not extract {layer.name}: {exc}")
-
-    return feature_maps
+if __name__ == "__main__":
+    main()

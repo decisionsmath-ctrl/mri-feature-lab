@@ -1,8 +1,6 @@
-streamlit>=1.35.0
-tensorflow>=2.15.0
+streamlit>=1.40.0
+tensorflow-cpu>=2.16.0
 pillow>=10.2.0
 numpy>=1.26.0
 matplotlib>=3.8.0
-google-genai>=0.6.0
-pytest>=8.0.0
-pytest-cov>=4.1.0
+google-genai>=1.0.0
